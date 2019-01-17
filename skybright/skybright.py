@@ -529,5 +529,5 @@ if __name__=='__main__':
 
     sky_model = MoonSkyModel(model_config)
     
-    print "Sky brightness at pointing: %f" % sky_model.skymag(args.mjd, args.ra, args.dec, args.filter)
+    print "Sky brightness at pointing: %f" % sky_model(args.mjd, args.ra, args.dec, args.filter)
 
