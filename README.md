@@ -1,12 +1,9 @@
 # skybright
 
-Sky light, sky bright,
-
-Only sky I'll see tonight,
-
-I wish I may, I wish I might,
-
-Know the sky I'll see tonight.
+Sky light, sky bright,</br>
+Only sky I'll see tonight,</br>
+I wish I may, I wish I might,</br>
+Know the sky I'll see tonight.</br>
 
 
 `skybright` is a tool for esitamting the sky brightness (in
