@@ -45,5 +45,5 @@ Sky brightness at pointing: 19.249708
 ```
 
 The `jupyter` notebook in
-[`doc/skybrightness.ipynb`](doc/skybrightness.ipynb) shows the use of
+[`doc/skybright.ipynb`](doc/skybright.ipynb) shows the use of
 the `python` API.
