@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="skybright",
-    version="0.0.1",
+    version="0.0.2",
     author="Eric H. Neilsen, Jr.",
     author_email="neilsen@fnal.gov",
     description="Utility for calculating sky brightness from airglow and moonlight",
@@ -16,6 +16,7 @@ setuptools.setup(
     install_requires=[
         "palpy >= 1.8.0",
         "numpy >= 1.11.0",
+        "numexpr >= 2.6.0"
     ],
     classifiers=[
         "Programming Language :: Python :: 2",
