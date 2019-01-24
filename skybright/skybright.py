@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 """A model for the sky brightness
 """
+from functools import partial
 from math import pi, cos, acos, sin, sqrt, log10
 from datetime import datetime, tzinfo, timedelta
 from time import strptime
@@ -11,72 +12,72 @@ from sys import argv
 from collections import namedtuple, OrderedDict
 from argparse import ArgumentParser
 from ConfigParser import ConfigParser
+import numexpr
+from numexpr import NumExpr
 import warnings
 from warnings import warn
 
 import numpy as np
 
 try:
-    from palpy import rdplan as rdplan_rad
-    from palpy import gmst as gmst_rad
+    from palpy import rdplan_not_vectorized
+    from palpy import gmst_not_vectorized
     from palpy import dmoon 
     from palpy import evp 
-    from palpy import dsep as dsep_rad
 except ImportError:
-    from pyslalib.slalib import sla_rdplan as rdplan_rad
-    from pyslalib.slalib import sla_gmst as gmst_rad
+    from pyslalib.slalib import sla_rdplan as rdplan_not_vectorized
+    from pyslalib.slalib import sla_gmst as gmst_not_vectorized
     from pyslalib.slalib import sla_dmoon as dmoon
     from pyslalib.slalib import sla_evp as evp
-    from pyslalib.slalib import sla_dsep as dsep_rad
     
 palpy_body = {'sun': 0,
               'moon': 3}
 
-warnings.simplefilter("always")
+mag0 = 23.9
 
-def zd_rad(ha, decl, latitude):
-    "Calculate the zenith distance in radians, given horizon coordinates"
-    cos_zd = np.cos(decl)*np.cos(latitude)*np.cos(ha) + np.sin(decl)*np.sin(latitude)
-    zd = np.arccos(cos_zd)
-    return zd
+# warnings.simplefilter("always")
 
+rdplan = np.vectorize(rdplan_not_vectorized)
 
-def body_zd_rad(body, latitude, longitude, mjd):
-    "Calculate the zenith distance in radians, given a body"
-    body_id = palpy_body[body]
-    ra, decl, diam = rdplan_rad(mjd, body_id, longitude, latitude)
-    lst = gmst_rad(mjd) + longitude
-    ha = lst - ra
-    return zd_rad(ha, decl, latitude)
+def gmst(mjd):
+    # Follow Meeus chapter 12
+    big_t = numexpr.evaluate("(mjd - 51544.5)/36525")
+    st = np.radians(np.mod(numexpr.evaluate("280.46061837 + 360.98564736629*(mjd-51544.5) + 0.000387933*big_t*big_t - big_t*big_t*big_t/38710000"), 360))
+    return st
+    
+def ang_sep(ra1, decl1, ra2, decl2):
+    # haversine formula
+    return numexpr.evaluate("2*arcsin(sqrt(cos(decl1)*cos(decl2)*(sin(((ra1-ra2)/2))**2) + (sin((decl1-decl2)/2))**2))")
 
+## Works and is trivially faster, but less flexible w.r.t. data types
+#
+# ang_sep = NumExpr("2*arcsin(sqrt(cos(decl1)*cos(decl2)*(sin(((ra1-ra2)/2))**2) + (sin((decl1-decl2)/2))**2))",
+#                  (('ra1', np.float64), ('decl1', np.float64), ('ra2', np.float64), ('decl2', np.float64)))
 
-def body_zd(body, latitude, longitude, mjd):
-    """Calculate the zenith distance of a solar system body, in degrees
+def calc_zd(latitude, ha, decl):
+    # zenith is always at ha=0, dec=latitude, by defn.
+    return ang_sep(ha, decl, 0, latitude)
 
-    Reproduce a value calculated by http://ssd.jpl.nasa.gov/horizons.cgi
-    for the moon
-    >>> latitude = -30.16527778
-    >>> longitude = -70.815
-    >>> mjd = 51778.47
-    >>> zd = body_zd('moon', latitude, longitude, mjd)
-    >>> print "%3.1f" % zd
-    48.0
+def calc_airmass(cos_zd):
+    a = numexpr.evaluate("462.46 + 2.8121/(cos_zd**2 + 0.22*cos_zd + 0.01)")
+    airmass = numexpr.evaluate("sqrt((a*cos_zd)**2 + 2*a + 1) - a * cos_zd")
+    airmass[cos_zd < 0] = np.nan
+    return airmass
 
-    and for the sun:
+def calc_airglow(r0, h, m_zen, k, sin_zd, airmass):
+    airglow = numexpr.evaluate("10**(-0.4*(m_zen + 1.25*log10(1.0 - (r0/(h+r0))*(sin_zd**2)) + k*(airmass-1) - mag0))")
+    return airglow
 
-    >>> latitude = -30.16527778
-    >>> longitude = -70.815
-    >>> mjd = 51778.595
-    >>> print "%3.1f" % body_zd('sun', latitude, longitude, mjd)
-    55.0
-    """
+def calc_scat_extinction(k, x0, x):
+    if len(np.shape(x0)) == 0:
+        x0p = calc_airmass(0) if np.isnan(x0) else x0
+    else:
+        x0p = np.where(np.isnan(x0), calc_airmass(0), x0)
+        
+    extinct = numexpr.evaluate("(10**(-0.4*k*x) - 10**(-0.4*k*x0p))/(-0.4*k*(x-x0p))")
+    return extinct
 
-    zd_rad = body_zd_rad(body, np.radians(latitude), np.radians(longitude), mjd)
-    zd = np.degrees(zd_rad)
-    return zd
-
-
-def elongation_rad(mjd):
+def elongation_not_vectorized(mjd):
     "Calculate the elongation of the moon in radians"
     pv = dmoon(mjd)
     moon_distance = (sum([x**2 for x in pv[:3]]))**0.5
@@ -84,26 +85,14 @@ def elongation_rad(mjd):
     dvb, dpb, dvh, dph = evp(mjd,-1)         
     sun_distance = (sum([x**2 for x in dph[:3]]))**0.5
 
-    a  = np.arccos(
+    a  = np.degrees(np.arccos(
         (-pv[0]*dph[0] - pv[1]*dph[1] - pv[2]*dph[2])/
-        (moon_distance*sun_distance))
+        (moon_distance*sun_distance)))
     return a
 
+elongation = np.vectorize(elongation_not_vectorized)
 
-def elongation(mjd):
-    """Calculate the elongation of the moon
-
-    Reproduce a value calculated by http://ssd.jpl.nasa.gov/horizons.cgi
-    >>> mjd = 51778.47
-    >>> elong = elongation(mjd)
-    >>> print "%3.1f" % elong
-    94.0
-    """
-    a = np.degrees(elongation_rad(mjd))
-    return a
-
-
-def moon_brightness(mjd):
+def calc_moon_brightness(mjd):
     """The brightness of the moon (relative to full)
 
     The value here matches about what I expect from the value in 
@@ -115,33 +104,10 @@ def moon_brightness(mjd):
     """
     alpha = 180.0-elongation(mjd)
     # Allen's _Astrophysical Quantities_, 3rd ed., p. 144
-    # return 2.512**(-0.026*abs(alpha) - 4E-9*(alpha**4))
-    return flux(0.026*abs(alpha) + 4E-9*(alpha**4), 0)
+    return 10**(-0.4*(0.026*abs(alpha) + 4E-9*(alpha**4)))
 
 
-# def body_brightness(mjd, body, sun_m):
-#     if body=='moon':
-#         return moon_brightness(mjd)
-#     elif body=='sun':
-#         return 2.512**(-12.74-sun_m)
-
-#     raise NotImplementedError()
-
-def body_brightness(mjd, body, sun_m):
-    # moon_max_Vmag = -12.73
-    # sun_Vmag = -26.76
-    # sun_moon_mag_diff = sun_Vmag - moon_max_Vmag
-    
-    if body=='moon':
-        return moon_brightness(mjd)
-    elif body=='sun':
-        return flux(sun_m, 0)
-
-    raise NotImplementedError()
-
-
-def body_twilight_rad(latitude, longitude, mjd, body, twi1=-2.52333, twi2=0.01111):
-    z = np.degrees(body_zd_rad(body, latitude, longitude, mjd))
+def one_calc_twilight_fract(z, twi1=-2.52333, twi2=0.01111):
     if z<90:
         return 1.0
     if z>108:
@@ -157,272 +123,46 @@ def body_twilight_rad(latitude, longitude, mjd, body, twi1=-2.52333, twi2=0.0111
     frac = 0.0 if frac<0.0 else frac
     return frac
 
+def calc_twilight_fract(zd, twi1=-2.52333, twi2=0.01111):
+    z = zd if len(np.shape(zd)) > 0 else np.array(zd)
 
-def airmass_rad(zd):
-    z = min(zd, np.pi/2)
-    a = 462.46 + 2.8121/(np.cos(z)**2 + 0.22*np.cos(z) + 0.01)
-    x = sqrt( (a*np.cos(z))**2 + 2 * a + 1 ) - a * cos(z)
-    return x
-
-
-def airmass(zd):
-    """Calculate the airmass
-
-    Reproduce Bemporad's empirical values (reported in Astrophysical Quantities)
-    >>> print "%5.3f" % airmass(0.0)
-    1.000
-    >>> print "%5.3f" % airmass(45.0)
-    1.413
-    >>> print "%3.1f" % airmass(80.0)
-    5.6
-    """
-    x = airmass_rad(np.radians(zd))
-    return x
+    logfrac = numexpr.evaluate("137.11-2.52333*z+0.01111*z*z")
+    logfrac[z>100] = numexpr.evaluate("twi1*z + twi2*z*z - (twi1*90 + twi2*90*90)")[z>100]
+    frac = 10**logfrac
+    frac = np.where(z<90, 1.0, frac)
+    frac = np.where(z>108, 0.0, frac)
+    frac = np.where(frac>1.0, 1.0, frac)
+    frac = np.where(frac<0.0, 0.0, frac)
+    return frac
 
 
-def body_airmass_rad(body, latitude, longitude, mjd):
-    zd = body_zd_rad(body, latitude, longitude, mjd)
-    x = airmass_rad(zd)
-    return x
+def calc_body_scattering(brightness, body_zd_deg, cos_zd, body_ra, body_decl, ra, decl,
+                         twi1, twi2, k, airmass, body_airmass, rayl_m, mie_c, g,
+                         rayleigh=True, mie=True):
+    if len(np.shape(brightness)) == 0:
+        brightness = np.array(brightness)
 
-def cosrho_rad(mjd, ra, decl, latitude, longitude, body):
-    body_idx = palpy_body[body]
-    body_ra, body_decl, diam = rdplan_rad(mjd, body_idx, longitude, latitude)
-    rho = dsep_rad(ra, decl, body_ra, body_decl)
-    return np.cos(rho)
+    brightness = np.where(body_zd_deg > 107.8, 0, brightness)
 
+    body_twi = body_zd_deg > 90
+    brightness[body_twi] = brightness[body_twi]*calc_twilight_fract(body_zd_deg[body_twi], twi1, twi2)
 
-def cosrho(mjd, ra, decl, latitude, longitude, body):
-    """Calculate the cosine of the angular separation between the moon and a point on the sky
+    extinct = calc_scat_extinction(k, body_airmass, airmass)
 
-    Test with results near and far from the moon position reported by
-    http://ssd.jpl.nasa.gov/horizons.cgi
-    >>> latitude = -30.16527778
-    >>> longitude = -70.815
-    >>> mjd = 51778.47
-    >>> print "%4.2f" % cosrho(mjd, 51.15, 15.54, latitude, longitude, 'moon')
-    1.00
-    >>> print "%4.2f" % cosrho(mjd, 51.15, 105.54, latitude, longitude, 'moon')
-    0.00
-    """
-    cr = cosrho_rad(mjd,
-                    np.radians(ra),
-                    np.radians(decl),
-                    np.radians(latitude),
-                    np.radians(longitude),
-                    body)
-    return cr
+    cos_rho = numexpr.evaluate("cos(2*arcsin(sqrt(cos(decl)*cos(body_decl)*(sin(((ra-body_ra)/2))**2) + (sin((decl-body_decl)/2))**2)))")
 
-
-def mjd(datedict):
-    """Convert a dictionary wi/ year, month, day, hour minute to MJD
-
-    >>> testd = {'year': 2000, 'month': 8, 'day': 22, 'hour': 11, 'minute': 17}
-    >>> print "%7.2f" % mjd(testd)
-    51778.47
-    """
-    tstring = '%(year)04d-%(month)02d-%(day)02dT%(hour)02d:%(minute)02d:00Z' % datedict
-    d = strptime(tstring,'%Y-%m-%dT%H:%M:%SZ')
-    posixtime = timegm(d)
-    mjd = 40587.0+posixtime/86400.0
-    return mjd
-
-
-def magadd(m1, m2):
-    """Add the flux corresponding to two magnitudes, and return the corresponding magnitude
-    """
-    return -2.5*log10( 10**(-0.4*m1) + 10**(-0.4*m2))
-
-
-def magn(f, m0=23.9):
-    """Return the AB magnitude corresponding to the given flux in microJanskys
-    """
-    if f <= 0:
-        #return 99.9
-        return np.nan
-    return m0 - 2.5*log10( f )
-
-
-def flux(m, m0=23.9):
-    return 10**(-0.4*(m-m0))
-
-
-def airglowshell_rad(mzen, h, ra, decl, mjd, k, latitude, longitude, r0=6375.0):
-    lst = gmst_rad(mjd) + longitude
-    ha = lst - ra
-    z = zd_rad(ha, decl, latitude)
-    x = airmass_rad(z)
-    mag = mzen + 1.25*log10(1.0-(r0/(h+r0))*(sin(z))**2) + k*(x-1)
-    return mag
-
-
-def airglowshell(mzen, h, ra, decl, mjd, k, latitude, longitude, r0=6375.0):
-    """Return the surface brightness from an airglow shell
-
-    >>> latitude = -30.16527778
-    >>> longitude = -70.815
-    >>>
-    >>> ra = 28.71208
-    >>> decl = 0.74225
-    >>> mjd = 51808.33
-    >>> k = 0.0583989
-    >>> 
-    >>> mzen = 20.15215
-    >>> h = 300.0
-    >>> m_inf = 22.30762
-    >>> print "%3.1f" % magadd(m_inf, airglowshell(mzen, h, ra, decl, mjd, k, latitude, longitude))
-    19.8
-    """
-    mag = airglowshell_rad(mzen, h, np.radians(ra), np.radians(decl), mjd, k, np.radians(latitude), np.radians(longitude), r0=r0)
-    return mag
-
-
-def bodyterm2_rad(ra, decl, mjd, k, latitude, longitude, body, twi1, twi2):
-    lst = gmst_rad(mjd) + longitude
-    ha = lst - ra
-    z = zd_rad(ha, decl, latitude)
-    x = airmass_rad(z)
-    xm = body_airmass_rad(body, latitude, longitude, mjd)
-    term = (10**(-0.4*k*x)-10**(-0.4*k*xm))/(-0.4*k*(x-xm))
-    term = term * body_twilight_rad(latitude, longitude, mjd, body, twi1, twi2)
-    return term
-
-
-def bodyterm2(ra, decl, mjd, k, latitude, longitude, body, twi1, twi2):
-    """The term in the scattered light function common to Mie and Rayleigh scattering
-
-    >>> latitude = -30.16527778
-    >>> longitude = -70.815
-    >>> 
-    >>> ra = 28.71208
-    >>> decl = 0.74225
-    >>> mjd = 51808.33
-    >>> k = 0.0583989
-    >>> twi1, twi2 = -2.52333, 0.01111
-    >>> print "%4.2f" % bodyterm2(ra, decl, mjd, k, latitude, longitude, 'moon', twi1, twi2)
-    2.08
-    """
-    term = bodyterm2_rad(np.radians(ra),
-                         np.radians(decl),
-                         mjd,
-                         k,
-                         np.radians(latitude),
-                         np.radians(longitude),
-                         body,
-                         twi1,
-                         twi2)
-    return term
-
-
-def rayleigh_frho(mjd, ra, decl, latitude, longitude, body):
-    """Calculate the Rayleigh scattered light
-
-    >>> latitude = -30.16527778
-    >>> longitude = -70.815
-    >>> 
-    >>> ra = 28.71208
-    >>> decl = 0.74225
-    >>> mjd = 51808.33
-    >>>
-    >>> print "%4.3f" % rayleigh_frho(mjd, ra, decl, latitude, longitude, 'moon')
-    0.874
-    """
-    mu = cosrho(mjd, ra, decl, latitude, longitude, body)
-    return 0.75*(1.0+mu**2)
-
-
-def rayleigh(m, ra, decl, mjd, k, latitude, longitude, body, sun_m, twi1, twi2):
-    """Calculate the Rayleigh scattered light
-
-    >>> latitude = -30.16527778
-    >>> longitude = -70.815
-    >>> 
-    >>> ra = 28.71208
-    >>> decl = 0.74225
-    >>> mjd = 51808.33
-    >>> k = 0.0583989
-    >>>
-    >>> m = -4.2843
-    >>> sun_m, twi1, twi2 = -26.74, -2.52333, 0.01111
-    >>> print "%4.2f" % rayleigh(m, ra, decl, mjd, k, latitude, longitude, 'moon', sun_m, twi1, twi2)    
-    21.71
-    """
-    term1 = flux(m + magn(
-            rayleigh_frho(mjd, ra, decl, latitude, longitude, body)))
-    term2 = bodyterm2(ra, decl, mjd, k, latitude, longitude, body, twi1, twi2)
-    return magn(term1 * term2 * body_brightness(mjd, body, sun_m))
-
-
-def mie_frho(g, mjd, ra, decl, latitude, longitude, body):
-    """Calculate the Mie scattered light
-
-    >>> latitude = -30.16527778
-    >>> longitude = -70.815
-    >>> 
-    >>> ra = 28.71208
-    >>> decl = 0.74225
-    >>> mjd = 51808.33
-    >>>
-    >>> g = 0.65
-    >>> print "%3.2f" % mie_frho(g, mjd, ra, decl, latitude, longitude, 'moon')
-    0.38
-    """
-    mu = cosrho(mjd, ra, decl, latitude, longitude, body)
-    return 1.5*((1.0-g**2)/(2.0+g**2)) * (1.0 + mu) * (1.0 + g**2 - 2.0*g*mu*mu)**(-1.5)
-
-
-def mie(g, c, ra, decl, mjd, k, latitude, longitude, body, sun_m, twi1, twi2):
-    term1 = mie_frho(g, mjd, ra, decl, latitude, longitude, body)
-    term2 = bodyterm2(ra, decl, mjd, k, latitude, longitude, body, twi1, twi2)
-    return magn(c * term1 * term2 * body_brightness(mjd, body, sun_m))
-
-
-def skymag(m_inf, m_zen, h, g, mie_c, rayl_m, ra, decl, mjd, k, latitude, longitude, offset=0.0,
-           sun_m=-14.0, twi1=-2.52333, twi2=0.01111):
-    """Calculate the total surface brightness of the sky
-
-    >>> latitude = -30.16527778
-    >>> longitude = -70.815
-    >>> 
-    >>> ra = 36.0
-    >>> decl = -30.0
-    >>> mjd = 58000.3
-    >>> k = 0.08
-    >>>
-    >>> m_zen = 21.4
-    >>> h = 90.0
-    >>> m_inf = 30.0
-    >>> rayl_m = -3.8
-    >>> g = 0.74
-    >>> mie_c = 62.0
-    >>> sun_m, twi1, twi2 = -14.0, -1.0, 0.003
-    >>> print "%4.2f" % skymag(m_inf, m_zen, h, g, mie_c, rayl_m, ra, decl, mjd, k, latitude, longitude, 0.0, sun_m, twi1, twi2)
-    19.49
-    """
-
-    zd = np.degrees(zd_rad(gmst_rad(mjd) + np.radians(longitude) - np.radians(ra),
-                           np.radians(decl),
-                           np.radians(latitude)))
-    if zd > 90:
-        raise NotImplementedError("Sky model does not work for pointings below the horizon!")
+    rayleigh_frho = numexpr.evaluate("0.75*(1.0+cos_rho**2)") if rayleigh else np.zeros_like(cos_rho)
+    mie_frho =  numexpr.evaluate("1.5*((1.0-g**2)/(2.0+g**2)) * (1.0 + cos_rho) * (1.0 + g**2 - 2.0*g*cos_rho*cos_rho)**(-1.5)") if mie else np.zeros_like(cos_rho)
+    mie_frho = np.where(mie_frho<0, 0.0, mie_frho)
     
-    if body_zd('sun', latitude, longitude, mjd) < 98:
-        raise NotImplementedError("Sky model does not work during the day")
-
-    mags = [m_inf,
-            airglowshell(m_zen, h, ra, decl, mjd, k, latitude, longitude)]
+    # Fitter sometimes explores values of g resulting mie_frho being negative.
+    # Force a physical result.
+    mie_frho = np.where(mie_frho<0, 0.0, mie_frho)
     
-    if body_zd('moon', latitude, longitude, mjd) < 107.8:
-        mags += [rayleigh(rayl_m, ra, decl, mjd, k, latitude, longitude, 'moon', sun_m, twi1, twi2),
-                 mie(g, mie_c, ra, decl, mjd, k, latitude, longitude, 'moon', sun_m, twi1, twi2)]
+    rayl_c = 10**(-0.4*rayl_m) 
+    flux = brightness*extinct*(rayl_c*rayleigh_frho + mie_c*mie_frho)
 
-    if body_zd('sun', latitude, longitude, mjd) < 107.8:
-        mags += [rayleigh(rayl_m, ra, decl, mjd, k, latitude, longitude, 'sun', sun_m, twi1, twi2),
-                 mie(g, mie_c, ra, decl, mjd, k, latitude, longitude, 'sun', sun_m, twi1, twi2)]
-
-    m = reduce(magadd, mags)
-    m = m + offset
-    return m
+    return flux
 
 class MoonSkyModel(object):
     def __init__(self, model_config):
@@ -430,8 +170,6 @@ class MoonSkyModel(object):
                                                "longitude")
         self.latitude = model_config.getfloat("Observatory Position",
                                               "latitude")
-        self.elevation = model_config.getfloat("Observatory Position",
-                                               "elevation")
 
         self.k = OrderedDict()
         self.m_inf = OrderedDict()
@@ -459,35 +197,129 @@ class MoonSkyModel(object):
             self.twi1[band] = float(model_config.get("sky","twi1").split()[i])
             self.twi2[band] = float(model_config.get("sky","twi2").split()[i])
 
-    def __call__(self, mjd, ra, decl, band):
-        try:
-            m = skymag(self.m_inf[band], self.m_zen[band], self.h[band], 
-                       self.g[band], self.mie_c[band], self.rayl_m[band], 
-                       ra, decl, mjd, 
-                       self.k[band], self.latitude, self.longitude, 
-                       self.offset[band],
-                       self.sun_m[band], self.twi1[band], self.twi2[band])
-        except Exception, e:
-            warn("Bad sky magnitude for mjd=%f, ra=%f, decl=%f, filter=%s: %s" % (
-                mjd, ra, decl, band, str(e)))
-            m=np.nan
-        return m
+        self.calc_zd = partial(calc_zd, np.radians(self.latitude))
+        self.r0 = 6375.0
+        self.twilight_nan = True
+
+    def __call__(self, mjd, ra_deg, decl_deg, band, sun=True, moon=True):
+        if len(np.shape(band)) < 1:
+            return self.single_band_call(mjd, ra_deg, decl_deg, band, sun=sun, moon=moon)
+
+        mags = np.empty_like(ra_deg, dtype=np.float64)
+        mags.fill(np.nan)
+
+        for this_band in np.unique(band):
+            these = band == this_band
+            mjd_arg = mjd if len(np.shape(mjd))==0 else mjd[these]
+            mags[these] = self.single_band_call(mjd_arg, ra_deg[these], decl_deg[these], this_band, sun=sun, moon=moon)
+
+        return mags
+            
         
-    def dark_skymag(self, band):
-        dsm = magadd(self.m_inf[band], self.m_zen[band])
-        return dsm
+    def single_band_call(self, mjd, ra_deg, decl_deg, band, sun=True, moon=True):
+        longitude = np.radians(self.longitude)
+        latitude = np.radians(self.latitude)
 
-    def dark_skymag_diff(self, band):
-        delta_skymag = self.skymag[band]-self.dark_skymag[band]
-        return delta_skymag
+        ra = np.radians(ra_deg)
+        decl = np.radians(decl_deg)
+        k = self.k[band]
+        twi1 = self.twi1[band]
+        twi2 = self.twi2[band]
+        m_inf = self.m_inf[band]
+        
+        lst = gmst(mjd) + longitude
+        ha = lst - ra
+        sun_ra, sun_decl, diam = rdplan(mjd, 0, longitude, latitude)
+        sun_ha = lst - sun_ra
+        sun_zd = self.calc_zd(sun_ha, sun_decl)
+        sun_zd_deg = np.degrees(sun_zd)
+        if len(np.shape(sun_zd_deg)) == 0 and self.twilight_nan:
+            if sun_zd_deg < 98:
+                m = np.empty_like(ra)
+                m.fill(np.nan)
+                return m
 
-    @property
-    def down(self, mjd):
-        """Return true iff the both sun and moon are down
-        """
-        return moon_zd(self.latitude, self.longitude, mjd) > 108.0 and \
-            body_zd('sun', self.latitude, self.longitude, mjd) > 108.0
+        sun_cos_zd = np.cos(sun_zd)
+        sun_airmass = calc_airmass(sun_cos_zd)
+        
+        moon_ra, moon_decl, diam = rdplan(mjd, 3, longitude, latitude)
+        moon_ha = lst - moon_ra
+        moon_zd = self.calc_zd(moon_ha, moon_decl)
+        moon_cos_zd = np.cos(moon_zd)
+        moon_airmass = calc_airmass(moon_cos_zd)
+        moon_zd_deg = np.degrees(moon_zd)
 
+        # Flux from infinity
+        sky_flux = np.empty_like(ra)
+        sky_flux.fill(10**(-0.4*(m_inf-mag0)))
+        
+        # Airglow
+        zd = self.calc_zd(ha, decl)
+        sin_zd = np.sin(zd)
+        cos_zd = np.cos(zd)
+        airmass = calc_airmass(cos_zd)
+        airglow_flux = calc_airglow(self.r0, self.h[band], self.m_zen[band], k, sin_zd, airmass)
+
+        sky_flux += airglow_flux
+        
+        # Needed for both scattering calculations
+        zd_deg = np.degrees(zd)
+
+        # Add scattering of moonlight
+        if moon:
+            moon_flux = calc_body_scattering(
+                calc_moon_brightness(mjd),
+                moon_zd_deg, cos_zd, moon_ra, moon_decl, ra, decl, twi1, twi2, k, airmass, moon_airmass,
+                self.rayl_m[band], self.mie_c[band], self.g[band])
+
+            sky_flux += moon_flux
+
+        # Add scattering of sunlight
+        if sun:
+            sun_flux = calc_body_scattering(
+                10**(-0.4*(self.sun_m[band])),
+                sun_zd_deg, cos_zd, sun_ra, sun_decl, ra, decl, twi1, twi2, k, airmass, sun_airmass,
+                self.rayl_m[band], self.mie_c[band], self.g[band])
+
+            sky_flux += sun_flux
+        
+        m = mag0 - 2.5*np.log10(sky_flux)
+
+        if len(np.shape(m)) > 0 and self.twilight_nan:
+            m[sun_zd_deg < 98] = np.nan
+
+        return m
+#
+# Included for backword compatibility with previous implementation
+#
+def skymag(m_inf, m_zen, h, g, mie_c, rayl_m, ra, decl, mjd, k, latitude, longitude, offset=0.0,
+           sun_m=-14.0, twi1=-2.52333, twi2=0.01111):
+    config = ConfigParser()
+
+    sect = "Observatory Position"
+    config.add_section(sect)
+    config.set(sect, 'longitude', longitude)
+    config.set(sect, 'latitude', latitude)
+
+    sect = "sky"
+    config.add_section(sect)
+    config.set(sect, 'filters', 'x')
+    config.set(sect, 'k', k)
+    config.set(sect, 'm_inf', m_inf)
+    config.set(sect, 'm_zen', m_zen)
+    config.set(sect, 'h', h)
+    config.set(sect, 'rayl_m', rayl_m)
+    config.set(sect, 'g', g)
+    config.set(sect, 'mie_c', mie_c)
+    config.set(sect, 'sun_m', sun_m)
+    config.set(sect, 'twi1', twi1)
+    config.set(sect, 'twi2', twi2)
+
+    calc_sky = MoonSkyModel(config)
+    sky = calc_sky(mjd, ra, decl, 'x')
+    return sky
+
+    
 if __name__=='__main__':
     parser = ArgumentParser('Estimate the sky brightness')
     parser.add_argument("-m", "--mjd", type=float,
@@ -510,8 +342,6 @@ if __name__=='__main__':
                                       "longitude")
     latitude = model_config.getfloat("Observatory Position",
                                      "latitude")
-    elevation = model_config.getfloat("Observatory Position",
-                                      "elevation")
 
     print "Moon zenith distance: %f" % body_zd('moon', latitude, longitude, args.mjd)
     print "Sun zenith distance: %f" % body_zd('sun', latitude, longitude, args.mjd)
@@ -521,7 +351,7 @@ if __name__=='__main__':
         cosrho(args.mjd, args.ra, args.dec, latitude, longitude, 'moon')))
     
 
-    lst = np.degrees(gmst_rad(args.mjd)) + longitude
+    lst = np.degrees(gmst(args.mjd)) + longitude
     ha = lst - args.ra
     z = np.degrees(zd_rad(np.radians(ha), np.radians(args.dec), np.radians(latitude)))
     print "Pointing zenith distance: %f" % z

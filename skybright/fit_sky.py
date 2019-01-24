@@ -6,28 +6,46 @@ from collections import namedtuple
 import readline
 import code
 import numpy as np
+import pandas as pd
 from math import acos, degrees
 from lmfit import minimize, Parameters, Parameter, report_errors
-from skybright import body_zd, skymag, moon_brightness, cosrho
+from skybrightv import calc_zd, rdplan, gmst, ang_sep, calc_moon_brightness, MoonSkyModel
 
 latitude = -30.16527778
 longitude = -70.815
-
+    
 def residuals(params, data):
-    def mmag(d):
-        return skymag(params['m_inf'].value, 
-                      params['m_zen'].value, 
-                      params['h'].value, 
-                      params['g'].value, 
-                      params['mie_c'].value, 
-                      params['rayl_m'].value, 
-                      d.telra, d.teldec, d.mjd, 
-                      d.k, latitude, longitude, 0.0,
-                      params['sun_m'].value,
-                      params['twi1'].value,
-                      params['twi2'].value)
-    modmag = np.array([mmag(d) for d in data])
-    datamag = np.array([d.skymag for d in data])
+    dummy_band = 'x'
+    config = ConfigParser()
+
+    sect = "Observatory Position"
+    config.add_section(sect)
+    config.set(sect, 'longitude', str(longitude))
+    config.set(sect, 'latitude', str(latitude))
+
+    sect = "sky"
+    config.add_section(sect)
+    config.set(sect, 'filters', str(dummy_band))
+    config.set(sect, 'k', str(float(params['k'])))
+    config.set(sect, 'm_inf', str(float(params['m_inf'])))
+    config.set(sect, 'm_zen', str(float(params['m_zen'])))
+    config.set(sect, 'h', str(float(params['h'])))
+    config.set(sect, 'rayl_m', str(float(params['rayl_m'])))
+    config.set(sect, 'g', str(float(params['g'])))
+    config.set(sect, 'mie_c', str(float(params['mie_c'])))
+    config.set(sect, 'sun_m', str(float(params['sun_m'])))
+    config.set(sect, 'twi1', str(float(params['twi1'])))
+    config.set(sect, 'twi2', str(float(params['twi2'])))
+
+    calc_sky = MoonSkyModel(config)
+    calc_sky.twilight_nan = False
+    calc_sky.k[dummy_band] = data.k.values
+    
+    modmag = calc_sky(data.mjd.values,
+                      data.telra.values,
+                      data.teldec.values,
+                      dummy_band)
+    datamag = data.skymag.values
 
     resid = modmag-datamag
     mad = np.median(abs(resid))
@@ -37,6 +55,7 @@ def residuals(params, data):
     resid[resid<(-1*clip_lim)] = -1*clip_lim
 
     return (modmag-datamag)
+
 
 def init_params(filter_name, cfg):
     i = cfg.get("sky","filters").split().index(filter_name)
@@ -98,12 +117,8 @@ def fit_dark_sky_filter(all_data, in_params, filter_name):
                min=-100.0, max=100.0, vary=False)
     params.add('twi2', value = in_params['twi2'],
                min=-100.0, max=100.0, vary=False)
-    
-    data = [d for d in all_data 
-            if d.band==filter_name 
-               and d.airmass < 2.0
-               and body_zd('moon', latitude, longitude, d.mjd) > 108.0
-               and body_zd('sun', latitude, longitude, d.mjd) > 108.0]
+
+    data = all_data.query("band == '%s' and airmass<2.0 and moon_zd>108.0 and sun_zd>108.0" % filter_name)
 
     fit = minimize(residuals, params, args=(data,))
 
@@ -139,12 +154,7 @@ def fit_bright_sky_filter(all_data, in_params, filter_name):
     params.add('twi2', value = in_params['twi2'],
                min=-100.0, max=100.0, vary=False)
     
-    data = [d for d in all_data 
-            if d.band==filter_name 
-               and d.airmass < 2.0
-               and moon_brightness > 0.5
-               and body_zd('moon', latitude, longitude, d.mjd) < 80.0
-               and body_zd('sun', latitude, longitude, d.mjd) > 108.0]
+    data = all_data.query("band == '%s' and airmass<2.0 and moon_brightness>0.0 and moon_zd<80.0 and sun_zd>108.0" % filter_name)
 
     fit = minimize(residuals, params, args=(data,))
 
@@ -180,15 +190,7 @@ def fit_rayl_sky_filter(all_data, in_params, filter_name, rayl_angle):
     params.add('twi2', value = in_params['twi2'],
                min=-100.0, max=100.0, vary=False)
 
-    data = [d for d in all_data 
-            if d.band==filter_name 
-               and d.airmass < 2.0
-               and moon_brightness > 0.5
-               and degrees(acos(cosrho(d.mjd, d.telra, d.teldec, 
-                               latitude, longitude,
-                               'moon'))) > rayl_angle
-               and body_zd('moon', latitude, longitude, d.mjd) < 80.0
-               and body_zd('sun', latitude, longitude, d.mjd) > 108.0]
+    data = all_data.query("band == '%s' and airmass<2.0 and moon_brightness>0.0 and moon_angle>%f and moon_zd<80.0 and sun_zd>108.0" % (filter_name, rayl_angle))
 
     print "Fitting to %d points" % len(data)
     fit = minimize(residuals, params, args=(data,))
@@ -224,19 +226,11 @@ def fit_mie_sky_filter(all_data, in_params, filter_name, mie_angle):
                min=-100.0, max=100.0, vary=False)
     params.add('twi2', value = in_params['twi2'],
                min=-100.0, max=100.0, vary=False)
-    
-    data = [d for d in all_data 
-            if d.band==filter_name 
-               and d.airmass < 2.0
-               and moon_brightness > 0.5
-               and degrees(acos(cosrho(d.mjd, d.telra, d.teldec, 
-                               latitude, longitude,
-                               'moon'))) < mie_angle
-               and body_zd('moon', latitude, longitude, d.mjd) < 80.0
-               and body_zd('sun', latitude, longitude, d.mjd) > 108.0]
+
+    data = all_data.query("band == '%s' and airmass<2.0 and moon_brightness>0.0 and moon_angle<%f and moon_zd<80.0 and sun_zd>108.0" % (filter_name, mie_angle))
 
     fit = minimize(residuals, params, args=(data,))
-
+        
     report_errors(fit.params)
     return fit.params
 
@@ -263,39 +257,18 @@ def fit_twilight(all_data, in_params, filter_name):
     params.add('rayl_m',  in_params['rayl_m'].value,
                min=-10.0, max=100.0, vary=False)
     params.add('sun_m',  in_params['sun_m'].value,
-               min=-20.0, max=-10.0, vary=True)
+               min=-20.0, max=-10.0, vary=False)
     params.add('twi1', value = in_params['twi1'],
                min=-100.0, max=100.0, vary=True)
     params.add('twi2', value = in_params['twi2'],
                min=-100.0, max=100.0, vary=True)
-    
-    data = [d for d in all_data 
-            if d.band==filter_name 
-               and d.airmass < 2.0
-               and body_zd('moon', latitude, longitude, d.mjd) > 108.0
-               and body_zd('sun', latitude, longitude, d.mjd) < 106.0]
+
+    data = all_data.query("band == '%s' and airmass < 2.0 and moon_zd > 108.0 and sun_zd < 106.0" % filter_name) 
 
     fit = minimize(residuals, params, args=(data,))
 
     report_errors(fit.params)
     return fit.params
-
-def read_sky_data(filename):
-    def tofloat(x):
-        try:
-            fx = float(x)
-            return fx
-        except:
-            return x
-
-    with open(filename, 'r') as f:
-        dialect = csv.Sniffer().sniff(f.read(4096))
-        f.seek(0)
-        rdr = csv.reader(f)
-        rows = list(rdr)
-        Exposure = namedtuple('Exposure',rows[0])
-        data = [Exposure(*[tofloat(v) for v in r]) for r in rows[1:]]
-    return data
 
 if __name__=='__main__':
     parser = ArgumentParser('Fit sky brightness model parames to data')
@@ -311,7 +284,24 @@ if __name__=='__main__':
     longitude = cfg.getfloat('Observatory Position', 'longitude')
 
     data_fname = cfg.get('Measured data', 'fname')
-    d = read_sky_data(data_fname)
+    d = pd.read_csv(data_fname)
+
+    d['ra_rad'] = np.radians(d.telra)
+    d['decl_rad'] = np.radians(d.teldec)
+    
+    lst = gmst(d.mjd) + np.radians(longitude)
+    moon_ra, moon_decl, diam = rdplan(d.mjd, 3, np.radians(longitude), np.radians(latitude))
+    moon_ha = lst - moon_ra
+    moon_zd = calc_zd(np.radians(latitude), moon_ha, moon_decl)
+    d['moon_zd'] = np.degrees(moon_zd)
+    d['moon_angle'] = np.degrees(ang_sep(d.ra_rad, d.decl_rad, moon_ra, moon_decl))
+    d['moon_brightness'] = calc_moon_brightness(d.mjd)
+    
+    sun_ra, sun_decl, diam = rdplan(d.mjd, 0, np.radians(longitude), np.radians(latitude))
+    sun_ha = lst - sun_ra
+    sun_zd = calc_zd(np.radians(latitude), sun_ha, sun_decl)
+    d['sun_zd'] = np.degrees(sun_zd)
+    d['sun_angle'] = np.degrees(ang_sep(d.ra_rad, d.decl_rad, sun_ra, sun_decl))
 
     filters_spec = cfg.get('todo', 'filters')
     if len(filters_spec) == 1:
@@ -381,15 +371,14 @@ if __name__=='__main__':
         sys.stdout.flush()
 
     print '[sky]'
-    print 'filters = %s     %s     %s     %s     %s  %s' % tuple(fit_params['filters'])
-    print 'k       = %4.2f %4.2f %4.2f %4.2f %4.2f  %4.2f' % tuple(fit_params['k'])
-    print 'm_inf   = %4.2f %4.2f %4.2f %4.2f %4.2f  %4.2f' % tuple(fit_params['m_inf'])
-    print 'm_zen   = %4.2f %4.2f %4.2f %4.2f %4.2f  %4.2f' % tuple(fit_params['m_zen'])
-    print 'h       = %4.0f %4.0f %4.0f %4.0f %4.0f  %4.2f' % tuple(fit_params['h'])
-    print 'rayl_m  = %4.2f %4.2f %4.2f %4.2f %4.2f  %4.2f' % tuple(fit_params['rayl_m'])
-    print 'g       = %4.2f %4.2f %4.2f %4.2f %f %f' % tuple(fit_params['g'])
-    print 'mie_c   = %4.2f %4.2f %4.2f %4.2f %f %f' % tuple(fit_params['mie_c'])
-    print 'sun_m   = %4.2f %4.2f %4.2f %4.2f %f %f' % tuple(fit_params['sun_m'])
-    print 'twi1    = %9.6f %9.6f %9.6f %9.6f %f %f' % tuple(fit_params['twi1'])
-    print 'twi2    = %9.6f %9.6f %9.6f %9.6f %f %f' % tuple(fit_params['twi2'])
-
+    print 'filters = ' + ' '.join("%s" % v for v in tuple(fit_params['filters']))
+    print 'k       = ' + ' '.join("%9.6f" % v for v in tuple(fit_params['k']))
+    print 'm_inf   = ' + ' '.join("%9.6f" % v for v in tuple(fit_params['m_inf']))
+    print 'm_zen   = ' + ' '.join("%9.6f" % v for v in tuple(fit_params['m_zen']))
+    print 'h       = ' + ' '.join("%9.6f" % v for v in tuple(fit_params['h']))
+    print 'rayl_m  = ' + ' '.join("%9.6f" % v for v in tuple(fit_params['rayl_m']))
+    print 'g       = ' + ' '.join("%9.6f" % v for v in tuple(fit_params['g']))
+    print 'mie_c   = ' + ' '.join("%9.6f" % v for v in tuple(fit_params['mie_c']))
+    print 'sun_m   = ' + ' '.join("%9.6f" % v for v in tuple(fit_params['sun_m']))
+    print 'twi1    = ' + ' '.join("%9.6f" % v for v in tuple(fit_params['twi1']))
+    print 'twi2    = ' + ' '.join("%9.6f" % v for v in tuple(fit_params['twi2'])) 
