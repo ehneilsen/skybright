@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from math import acos, degrees
 from lmfit import minimize, Parameters, Parameter, report_errors
-from skybrightv import calc_zd, rdplan, gmst, ang_sep, calc_moon_brightness, MoonSkyModel
+from skybright import calc_zd, rdplan, gmst, ang_sep, calc_moon_brightness, MoonSkyModel, MAG0
 
 latitude = -30.16527778
 longitude = -70.815
@@ -32,8 +32,8 @@ def residuals(params, data):
     config.set(sect, 'h', str(float(params['h'])))
     config.set(sect, 'rayl_m', str(float(params['rayl_m'])))
     config.set(sect, 'g', str(float(params['g'])))
-    config.set(sect, 'mie_c', str(float(params['mie_c'])))
-    config.set(sect, 'sun_m', str(float(params['sun_m'])))
+    config.set(sect, 'mie_m', str(float(params['mie_m'])))
+    config.set(sect, 'sun_dm', str(float(params['sun_dm'])))
     config.set(sect, 'twi1', str(float(params['twi1'])))
     config.set(sect, 'twi2', str(float(params['twi2'])))
 
@@ -75,13 +75,13 @@ def init_params(filter_name, cfg):
                min=60, max=3000)
     params.add('g', 
                value = float(cfg.get("sky","g").split()[i]),
-               min=0.5, max=1.5)
-    params.add('mie_c', 
-               value = float(cfg.get("sky","mie_c").split()[i]),
-               min=2.0, max=2000.0)
+               min=0.0, max=1.0)
+    params.add('mie_m', 
+               value = float(cfg.get("sky","mie_m").split()[i]),
+               min=10.0, max=30.0)
     params.add('rayl_m', value = float(cfg.get("sky","rayl_m").split()[i]),
-               min=-10.0, max=100.0)
-    params.add('sun_m', value = float(cfg.get("sky","sun_m").split()[i]),
+               min=10.0, max=30.0)
+    params.add('sun_dm', value = float(cfg.get("sky","sun_dm").split()[i]),
                min=-20.0, max=-10.0)
     params.add('twi1', value = float(cfg.get("sky","twi1").split()[i]),
                min=-100.0, max=100.0)
@@ -105,13 +105,13 @@ def fit_dark_sky_filter(all_data, in_params, filter_name):
                min=60, max=3000, vary=False)
     params.add('g', 
                value =  in_params['g'].value,
-               min=0.5, max=1.5, vary=False)
-    params.add('mie_c', 
-               value =  in_params['mie_c'].value,
-               min=2.0, max=2000.0, vary=False)
+               min=0.0, max=1.0, vary=False)
+    params.add('mie_m', 
+               value =  in_params['mie_m'].value,
+               min=10.0, max=30.0, vary=False)
     params.add('rayl_m',  in_params['rayl_m'].value,
-               min=-10.0, max=100.0, vary=False)
-    params.add('sun_m',  in_params['sun_m'].value,
+               min=10.0, max=30.0, vary=False)
+    params.add('sun_dm',  in_params['sun_dm'].value,
                min=-20.0, max=-10.0, vary=False)
     params.add('twi1', value = in_params['twi1'],
                min=-100.0, max=100.0, vary=False)
@@ -141,13 +141,13 @@ def fit_bright_sky_filter(all_data, in_params, filter_name):
                min=60, max=3000, vary=False)
     params.add('g', 
                value =  in_params['g'].value,
-               min=0.5, max=1.5, vary=True)
-    params.add('mie_c', 
-               value =  in_params['mie_c'].value,
-               min=2.0, max=20000.0, vary=True)
+               min=0.0, max=1.0, vary=True)
+    params.add('mie_m', 
+               value =  in_params['mie_m'].value,
+               min=10.0, max=30.0, vary=True)
     params.add('rayl_m',  in_params['rayl_m'].value,
-               min=-10.0, max=100.0, vary=True)
-    params.add('sun_m',  in_params['sun_m'].value,
+               min=10.0, max=30.0, vary=True)
+    params.add('sun_dm',  in_params['sun_dm'].value,
                min=-20.0, max=-10.0, vary=False)
     params.add('twi1', value = in_params['twi1'],
                min=-100.0, max=100.0, vary=False)
@@ -177,13 +177,13 @@ def fit_rayl_sky_filter(all_data, in_params, filter_name, rayl_angle):
                min=60, max=3000, vary=False)
     params.add('g', 
                value =  in_params['g'].value,
-               min=0.5, max=1.5, vary=False)
-    params.add('mie_c', 
-               value =  in_params['mie_c'].value,
-               min=2.0, max=20000.0, vary=False)
+               min=0.0, max=1.0, vary=False)
+    params.add('mie_m', 
+               value =  in_params['mie_m'].value,
+               min=10.0, max=30.0, vary=False)
     params.add('rayl_m',  in_params['rayl_m'].value,
-               min=-10.0, max=100.0, vary=True)
-    params.add('sun_m',  in_params['sun_m'].value,
+               min=10.0, max=30.0, vary=True)
+    params.add('sun_dm',  in_params['sun_dm'].value,
                min=-20.0, max=-10.0, vary=False)
     params.add('twi1', value = in_params['twi1'],
                min=-100.0, max=100.0, vary=False)
@@ -214,13 +214,13 @@ def fit_mie_sky_filter(all_data, in_params, filter_name, mie_angle):
                min=80, max=3000, vary=False)
     params.add('g', 
                value =  in_params['g'].value,
-               min=0.5, max=1.5, vary=True)
-    params.add('mie_c', 
-               value =  in_params['mie_c'].value,
-               min=2.0, max=20000.0, vary=True)
+               min=0.0, max=1.0, vary=True)
+    params.add('mie_m', 
+               value =  in_params['mie_m'].value,
+               min=10.0, max=30.0, vary=True)
     params.add('rayl_m',  in_params['rayl_m'].value,
-               min=-10.0, max=100.0, vary=False)
-    params.add('sun_m',  in_params['sun_m'].value,
+               min=10.0, max=30.0, vary=False)
+    params.add('sun_dm',  in_params['sun_dm'].value,
                min=-20.0, max=-10.0, vary=False)
     params.add('twi1', value = in_params['twi1'],
                min=-100.0, max=100.0, vary=False)
@@ -250,14 +250,14 @@ def fit_twilight(all_data, in_params, filter_name):
                min=80, max=3000, vary=False)
     params.add('g', 
                value =  in_params['g'].value,
-               min=0.5, max=1.5, vary=False)
-    params.add('mie_c', 
-               value =  in_params['mie_c'].value,
-               min=2.0, max=20000.0, vary=False)
+               min=0.0, max=1.0, vary=False)
+    params.add('mie_m', 
+               value =  in_params['mie_m'].value,
+               min=10.0, max=30.0, vary=False)
     params.add('rayl_m',  in_params['rayl_m'].value,
-               min=-10.0, max=100.0, vary=False)
-    params.add('sun_m',  in_params['sun_m'].value,
-               min=-20.0, max=-10.0, vary=False)
+               min=10.0, max=30.0, vary=False)
+    params.add('sun_dm',  in_params['sun_dm'].value,
+               min=-20.0, max=-10.0, vary=True)
     params.add('twi1', value = in_params['twi1'],
                min=-100.0, max=100.0, vary=True)
     params.add('twi2', value = in_params['twi2'],
@@ -321,12 +321,12 @@ if __name__=='__main__':
                   'h': [],
                   'rayl_m': [],
                   'g': [],
-                  'mie_c': [],
-                  'sun_m': [],
+                  'mie_m': [],
+                  'sun_dm': [],
                   'twi1': [],
                   'twi2': []}
     
-    param_names = ['k','m_inf','m_zen','h','rayl_m','g','mie_c', 'sun_m', 'twi1', 'twi2']
+    param_names = ['k','m_inf','m_zen','h','rayl_m','g','mie_m', 'sun_dm', 'twi1', 'twi2']
 
     for filter_name in filter_names:
         print '*******',filter_name,'*******'
@@ -358,8 +358,8 @@ if __name__=='__main__':
         print 'h: %f' % bright_fit['h'].value
         print 'rayl_m: %f' % bright_fit['rayl_m'].value
         print 'g: %f' % bright_fit['g'].value
-        print 'mie_c: %f' % bright_fit['mie_c'].value
-        print 'sun_m: %f' % bright_fit['sun_m'].value
+        print 'mie_m: %f' % bright_fit['mie_m'].value
+        print 'sun_dm: %f' % bright_fit['sun_dm'].value
         print 'twi1: %f' % bright_fit['twi1'].value
         print 'twi2: %f' % bright_fit['twi2'].value
         print
@@ -378,7 +378,7 @@ if __name__=='__main__':
     print 'h       = ' + ' '.join("%9.6f" % v for v in tuple(fit_params['h']))
     print 'rayl_m  = ' + ' '.join("%9.6f" % v for v in tuple(fit_params['rayl_m']))
     print 'g       = ' + ' '.join("%9.6f" % v for v in tuple(fit_params['g']))
-    print 'mie_c   = ' + ' '.join("%9.6f" % v for v in tuple(fit_params['mie_c']))
-    print 'sun_m   = ' + ' '.join("%9.6f" % v for v in tuple(fit_params['sun_m']))
+    print 'mie_m   = ' + ' '.join("%9.6f" % v for v in tuple(fit_params['mie_m']))
+    print 'sun_dm  = ' + ' '.join("%9.6f" % v for v in tuple(fit_params['sun_dm']))
     print 'twi1    = ' + ' '.join("%9.6f" % v for v in tuple(fit_params['twi1']))
     print 'twi2    = ' + ' '.join("%9.6f" % v for v in tuple(fit_params['twi2'])) 

@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="skybright",
-    version="0.0.2",
+    version="0.0.3",
     author="Eric H. Neilsen, Jr.",
     author_email="neilsen@fnal.gov",
     description="Utility for calculating sky brightness from airglow and moonlight",

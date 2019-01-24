@@ -33,7 +33,7 @@ except ImportError:
 palpy_body = {'sun': 0,
               'moon': 3}
 
-mag0 = 23.9
+MAG0 = 23.9
 
 # warnings.simplefilter("always")
 
@@ -65,7 +65,7 @@ def calc_airmass(cos_zd):
     return airmass
 
 def calc_airglow(r0, h, m_zen, k, sin_zd, airmass):
-    airglow = numexpr.evaluate("10**(-0.4*(m_zen + 1.25*log10(1.0 - (r0/(h+r0))*(sin_zd**2)) + k*(airmass-1) - mag0))")
+    airglow = numexpr.evaluate("10**(-0.4*(m_zen + 1.25*log10(1.0 - (r0/(h+r0))*(sin_zd**2)) + k*(airmass-1) - MAG0))")
     return airglow
 
 def calc_scat_extinction(k, x0, x):
@@ -137,7 +137,7 @@ def calc_twilight_fract(zd, twi1=-2.52333, twi2=0.01111):
 
 
 def calc_body_scattering(brightness, body_zd_deg, cos_zd, body_ra, body_decl, ra, decl,
-                         twi1, twi2, k, airmass, body_airmass, rayl_m, mie_c, g,
+                         twi1, twi2, k, airmass, body_airmass, rayl_m, mie_m, g,
                          rayleigh=True, mie=True):
     if len(np.shape(brightness)) == 0:
         brightness = np.array(brightness)
@@ -159,7 +159,8 @@ def calc_body_scattering(brightness, body_zd_deg, cos_zd, body_ra, body_decl, ra
     # Force a physical result.
     mie_frho = np.where(mie_frho<0, 0.0, mie_frho)
     
-    rayl_c = 10**(-0.4*rayl_m) 
+    rayl_c = 10**(-0.4*(rayl_m-MAG0))
+    mie_c = 10**(-0.4*(mie_m-MAG0))
     flux = brightness*extinct*(rayl_c*rayleigh_frho + mie_c*mie_frho)
 
     return flux
@@ -177,9 +178,9 @@ class MoonSkyModel(object):
         self.h = OrderedDict()
         self.rayl_m = OrderedDict()
         self.g = OrderedDict()
-        self.mie_c = OrderedDict()
+        self.mie_m = OrderedDict()
         self.offset = OrderedDict()
-        self.sun_m = OrderedDict()
+        self.sun_dm = OrderedDict()
         self.twi1 = OrderedDict()
         self.twi2 = OrderedDict()
 
@@ -191,9 +192,9 @@ class MoonSkyModel(object):
             self.h[band] = float(model_config.get("sky","h").split()[i])
             self.rayl_m[band] = float(model_config.get("sky","rayl_m").split()[i])
             self.g[band] = float(model_config.get("sky","g").split()[i])
-            self.mie_c[band] = float(model_config.get("sky","mie_c").split()[i])
+            self.mie_m[band] = float(model_config.get("sky","mie_m").split()[i])
             self.offset[band] = 0.0
-            self.sun_m[band] = float(model_config.get("sky","sun_m").split()[i])
+            self.sun_dm[band] = float(model_config.get("sky","sun_dm").split()[i])
             self.twi1[band] = float(model_config.get("sky","twi1").split()[i])
             self.twi2[band] = float(model_config.get("sky","twi2").split()[i])
 
@@ -251,7 +252,7 @@ class MoonSkyModel(object):
 
         # Flux from infinity
         sky_flux = np.empty_like(ra)
-        sky_flux.fill(10**(-0.4*(m_inf-mag0)))
+        sky_flux.fill(10**(-0.4*(m_inf-MAG0)))
         
         # Airglow
         zd = self.calc_zd(ha, decl)
@@ -270,20 +271,20 @@ class MoonSkyModel(object):
             moon_flux = calc_body_scattering(
                 calc_moon_brightness(mjd),
                 moon_zd_deg, cos_zd, moon_ra, moon_decl, ra, decl, twi1, twi2, k, airmass, moon_airmass,
-                self.rayl_m[band], self.mie_c[band], self.g[band])
+                self.rayl_m[band], self.mie_m[band], self.g[band])
 
             sky_flux += moon_flux
 
         # Add scattering of sunlight
         if sun:
             sun_flux = calc_body_scattering(
-                10**(-0.4*(self.sun_m[band])),
+                10**(-0.4*(self.sun_dm[band])),
                 sun_zd_deg, cos_zd, sun_ra, sun_decl, ra, decl, twi1, twi2, k, airmass, sun_airmass,
-                self.rayl_m[band], self.mie_c[band], self.g[band])
+                self.rayl_m[band], self.mie_m[band], self.g[band])
 
             sky_flux += sun_flux
         
-        m = mag0 - 2.5*np.log10(sky_flux)
+        m = MAG0 - 2.5*np.log10(sky_flux)
 
         if len(np.shape(m)) > 0 and self.twilight_nan:
             m[sun_zd_deg < 98] = np.nan
@@ -292,8 +293,8 @@ class MoonSkyModel(object):
 #
 # Included for backword compatibility with previous implementation
 #
-def skymag(m_inf, m_zen, h, g, mie_c, rayl_m, ra, decl, mjd, k, latitude, longitude, offset=0.0,
-           sun_m=-14.0, twi1=-2.52333, twi2=0.01111):
+def skymag(m_inf, m_zen, h, g, mie_m, rayl_m, ra, decl, mjd, k, latitude, longitude, offset=0.0,
+           sun_dm=-14.0, twi1=-2.52333, twi2=0.01111):
     config = ConfigParser()
 
     sect = "Observatory Position"
@@ -310,8 +311,8 @@ def skymag(m_inf, m_zen, h, g, mie_c, rayl_m, ra, decl, mjd, k, latitude, longit
     config.set(sect, 'h', h)
     config.set(sect, 'rayl_m', rayl_m)
     config.set(sect, 'g', g)
-    config.set(sect, 'mie_c', mie_c)
-    config.set(sect, 'sun_m', sun_m)
+    config.set(sect, 'mie_m', mie_m)
+    config.set(sect, 'sun_dm', sun_dm)
     config.set(sect, 'twi1', twi1)
     config.set(sect, 'twi2', twi2)
 
