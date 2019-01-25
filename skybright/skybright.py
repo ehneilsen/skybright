@@ -344,21 +344,29 @@ if __name__=='__main__':
     latitude = model_config.getfloat("Observatory Position",
                                      "latitude")
 
-    print "Moon zenith distance: %f" % body_zd('moon', latitude, longitude, args.mjd)
-    print "Sun zenith distance: %f" % body_zd('sun', latitude, longitude, args.mjd)
-    print "Elongation of the moon: %f" % elongation(args.mjd)
-    print "Moon brightness: %f" % moon_brightness(args.mjd)
-    print "Pointing angle with moon: %f" % np.degrees(np.arccos(
-        cosrho(args.mjd, args.ra, args.dec, latitude, longitude, 'moon')))
-    
+    lst = gmst(args.mjd) + np.radians(longitude)
+    sun_ra, sun_decl, diam = rdplan(args.mjd, 0, np.radians(longitude), np.radians(latitude))
+    sun_ha = lst - sun_ra
+    sun_zd = np.degrees(calc_zd(np.radians(latitude), sun_ha, sun_decl))
+    print("Sun zenith distance: %f" % sun_zd)
 
-    lst = np.degrees(gmst(args.mjd)) + longitude
-    ha = lst - args.ra
-    z = np.degrees(zd_rad(np.radians(ha), np.radians(args.dec), np.radians(latitude)))
-    print "Pointing zenith distance: %f" % z
-    print "Airmass: %f" % airmass(z)
+    moon_ra, moon_decl, diam = rdplan(args.mjd, 3, longitude, latitude)
+    moon_ha = lst - moon_ra
+    moon_zd = np.degrees(calc_zd(np.radians(latitude), moon_ha, moon_decl))
+    print("Moon zenith distance: %f" % moon_zd)
+
+    print("Elongation of the moon: %f" % elongation(args.mjd))
+    print("Moon brightness: %f" % calc_moon_brightness(args.mjd))
+
+
+    sep = ang_sep(moon_ra, moon_decl, np.radians(args.ra), np.radians(args.dec))
+    print("Pointing angle with moon: %f" % sep)
+
+    ha = lst - np.radians(args.ra)
+    z = calc_zd(np.radians(latitude), ha, np.radians(args.dec))
+    print("Pointing zenith distance: %f" % np.degrees(z))
+    print("Airmass: %f" % calc_airmass(np.cos(z)))
 
     sky_model = MoonSkyModel(model_config)
     
-    print "Sky brightness at pointing: %f" % sky_model(args.mjd, args.ra, args.dec, args.filter)
-
+    print("Sky brightness at pointing: %f" % sky_model(args.mjd, args.ra, args.dec, args.filter))
