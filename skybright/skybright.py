@@ -7,11 +7,14 @@ from datetime import datetime, tzinfo, timedelta
 from time import strptime
 from calendar import timegm
 from copy import deepcopy
-from string import strip
 from sys import argv
 from collections import namedtuple, OrderedDict
 from argparse import ArgumentParser
-from ConfigParser import ConfigParser
+try:
+    from ConfigParser import ConfigParser
+except:
+    from configparser import ConfigParser
+    
 import numexpr
 from numexpr import NumExpr
 import warnings
@@ -20,8 +23,8 @@ from warnings import warn
 import numpy as np
 
 try:
-    from palpy import rdplan_not_vectorized
-    from palpy import gmst_not_vectorized
+    from palpy import rdplan as rdplan_not_vectorized
+    from palpy import gmst as gmst_not_vectorized
     from palpy import dmoon 
     from palpy import evp 
 except ImportError:
