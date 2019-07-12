@@ -8,7 +8,7 @@ from skybright import calc_scat_extinction
 from skybright import elongation
 from skybright import calc_moon_brightness
 from skybright import calc_twilight_fract
-from skybright import mag0
+from skybright import MAG0
 
 class TestSkybright(unittest.TestCase):
 
@@ -35,7 +35,7 @@ class TestSkybright(unittest.TestCase):
 
     def test_calc_airglow(self):
         airglow = calc_airglow(6375.0, 90.0, 20.26, 0.08, 0.6014162262210697, 1.2509062370431252)
-        self.assertAlmostEqual(mag0 - 2.5*np.log10(airglow), 20.040617969240394)
+        self.assertAlmostEqual(MAG0 - 2.5*np.log10(airglow), 20.040617969240394)
 
     def test_calc_scat_extinction(self):
         scat_ext = calc_scat_extinction(0.08, 1.4823902499099404, 1.2509062370431252)

@@ -95,7 +95,7 @@ def elongation_not_vectorized(mjd):
 
 elongation = np.vectorize(elongation_not_vectorized)
 
-def calc_moon_brightness(mjd):
+def calc_moon_brightness(mjd, moon_elongation=None):
     """The brightness of the moon (relative to full)
 
     The value here matches about what I expect from the value in 
@@ -105,7 +105,9 @@ def calc_moon_brightness(mjd):
     >>> print "%3.2f" % moon_brightness(mjd)
     0.10
     """
-    alpha = 180.0-elongation(mjd)
+    if moon_elongation is None:
+        moon_elongation = elongation(mjd)
+    alpha = 180.0-moon_elongation
     # Allen's _Astrophysical Quantities_, 3rd ed., p. 144
     return 10**(-0.4*(0.026*abs(alpha) + 4E-9*(alpha**4)))
 
@@ -205,9 +207,13 @@ class MoonSkyModel(object):
         self.r0 = 6375.0
         self.twilight_nan = True
 
-    def __call__(self, mjd, ra_deg, decl_deg, band, sun=True, moon=True):
+    def __call__(self, mjd, ra_deg, decl_deg, band, sun=True, moon=True,
+                 moon_crds=None, moon_elongation=None, sun_crds=None, lst=None):
         if len(np.shape(band)) < 1:
-            return self.single_band_call(mjd, ra_deg, decl_deg, band, sun=sun, moon=moon)
+            return self.single_band_call(
+                mjd, ra_deg, decl_deg, band, sun=sun, moon=moon,
+                moon_crds=moon_crds, moon_elongation=moon_elongation, sun_crds=sun_crds,
+                lst=lst)
 
         mags = np.empty_like(ra_deg, dtype=np.float64)
         mags.fill(np.nan)
@@ -215,12 +221,17 @@ class MoonSkyModel(object):
         for this_band in np.unique(band):
             these = band == this_band
             mjd_arg = mjd if len(np.shape(mjd))==0 else mjd[these]
-            mags[these] = self.single_band_call(mjd_arg, ra_deg[these], decl_deg[these], this_band, sun=sun, moon=moon)
+            mags[these] = self.single_band_call(
+                mjd_arg, ra_deg[these], decl_deg[these], this_band, sun=sun, moon=moon,
+                moon_crds=moon_crds, moon_elongation=moon_elongation, sun_crds=sun_crds,
+                lst=lst
+            )
 
         return mags
             
         
-    def single_band_call(self, mjd, ra_deg, decl_deg, band, sun=True, moon=True):
+    def single_band_call(self, mjd, ra_deg, decl_deg, band, sun=True, moon=True,
+                         moon_crds=None, moon_elongation=None, sun_crds=None, lst=None):
         longitude = np.radians(self.longitude)
         latitude = np.radians(self.latitude)
 
@@ -231,9 +242,14 @@ class MoonSkyModel(object):
         twi2 = self.twi2[band]
         m_inf = self.m_inf[band]
         
-        lst = gmst(mjd) + longitude
+        lst = gmst(mjd) + longitude if lst is None else np.radians(lst)
         ha = lst - ra
-        sun_ra, sun_decl, diam = rdplan(mjd, 0, longitude, latitude)
+        if sun_crds is None:
+            sun_ra, sun_decl, diam = rdplan(mjd, 0, longitude, latitude)
+        else:
+            sun_ra = sun_crds.ra.rad
+            sun_decl = sun_crds.dec.rad
+            
         sun_ha = lst - sun_ra
         sun_zd = self.calc_zd(sun_ha, sun_decl)
         sun_zd_deg = np.degrees(sun_zd)
@@ -245,8 +261,13 @@ class MoonSkyModel(object):
 
         sun_cos_zd = np.cos(sun_zd)
         sun_airmass = calc_airmass(sun_cos_zd)
-        
-        moon_ra, moon_decl, diam = rdplan(mjd, 3, longitude, latitude)
+
+        if moon_crds is None:
+            moon_ra, moon_decl, diam = rdplan(mjd, 3, longitude, latitude)
+        else:
+            moon_ra = moon_crds.ra.rad
+            moon_decl = moon_crds.dec.rad
+            
         moon_ha = lst - moon_ra
         moon_zd = self.calc_zd(moon_ha, moon_decl)
         moon_cos_zd = np.cos(moon_zd)
@@ -272,7 +293,7 @@ class MoonSkyModel(object):
         # Add scattering of moonlight
         if moon:
             moon_flux = calc_body_scattering(
-                calc_moon_brightness(mjd),
+                calc_moon_brightness(mjd, moon_elongation),
                 moon_zd_deg, cos_zd, moon_ra, moon_decl, ra, decl, twi1, twi2, k, airmass, moon_airmass,
                 self.rayl_m[band], self.mie_m[band], self.g[band])
 
@@ -348,6 +369,8 @@ if __name__=='__main__':
                                      "latitude")
 
     lst = gmst(args.mjd) + np.radians(longitude)
+    print("GMST: %f" % np.degrees(gmst(args.mjd)))
+    print("LST: %f" % np.degrees(lst))
     sun_ra, sun_decl, diam = rdplan(args.mjd, 0, np.radians(longitude), np.radians(latitude))
     sun_ha = lst - sun_ra
     sun_zd = np.degrees(calc_zd(np.radians(latitude), sun_ha, sun_decl))
@@ -366,6 +389,7 @@ if __name__=='__main__':
     print("Pointing angle with moon: %f" % sep)
 
     ha = lst - np.radians(args.ra)
+    print("Hour angle: %f" % np.degrees(ha))
     z = calc_zd(np.radians(latitude), ha, np.radians(args.dec))
     print("Pointing zenith distance: %f" % np.degrees(z))
     print("Airmass: %f" % calc_airmass(np.cos(z)))
